@@ -1,0 +1,10 @@
+
+conda tos accept
+
+conda create -n artifactscorer -c conda-forge python=3.12 numpy pandas scipy matplotlib joblib pyedflib pyqt spyder -y
+
+conda activate artifactscorer
+
+pip install lspopt
+
+spyder
