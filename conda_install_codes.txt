@@ -8,3 +8,5 @@ conda activate artifactscorer
 pip install lspopt
 
 spyder
+
+Preferences >> Ipython console >> Backend >> Qt5
