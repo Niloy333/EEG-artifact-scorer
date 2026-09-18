@@ -1,12 +1,12 @@
 """
 Interactive two-channel sleep EEG viewer with manual artifact annotation.
-v2_2 - unfiltered display, 'Scoring finished' button, .csv written next to the EDF file.
 Requires the Qt backend: run '%matplotlib qt' in the console first.
 """
 
 #%% Imports and user configuration
 
 import os
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import pyedflib
@@ -73,6 +73,18 @@ def build_rules_text():
     lines += [f'&bull; <b>{code}</b> &mdash; {text}' for code, text in ART_RULES.items()]
     return '<br>'.join(lines)
 
+#%% Helper: describe an already existing annotation file
+
+def describe_existing_csv(csv_path):
+    if not os.path.exists(csv_path):
+        return ''
+    stamp = datetime.fromtimestamp(os.path.getmtime(csv_path)).strftime('%d-%m-%Y %H:%M')
+    try:
+        detail = f'{len(pd.read_csv(csv_path))} row(s), last modified {stamp}'
+    except Exception:
+        detail = f'last modified {stamp}'
+    return f'This night has already been scored ({detail}).<br>Finishing a new session <b>overwrites</b> that file.'
+
 #%% Helper: graphical input window (EDF file and two channels)
 
 def ask_inputs():
@@ -97,6 +109,10 @@ def ask_inputs():
     label_out.setWordWrap(True)
     label_hint = QtWidgets.QLabel('')
     label_hint.setStyleSheet(f'color: #b00; font-size: {UI_FONT_PT}pt;')
+    label_exists = QtWidgets.QLabel('')
+    label_exists.setTextFormat(QtCore.Qt.TextFormat.RichText)
+    label_exists.setWordWrap(True)
+    label_exists.setStyleSheet(f'color: #8a4b00; font-weight: bold; font-size: {UI_FONT_PT}pt;')
 
     rules = QtWidgets.QLabel(build_rules_text())
     rules.setTextFormat(QtCore.Qt.TextFormat.RichText)
@@ -110,7 +126,7 @@ def ask_inputs():
     buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
     buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(False)
     buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText('Start scoring')
-    buttons.accepted.connect(dlg.accept)
+    buttons.accepted.connect(lambda: try_accept())
     buttons.rejected.connect(dlg.reject)
 
     form = QtWidgets.QFormLayout()
@@ -119,6 +135,7 @@ def ask_inputs():
     form.addRow('Channel 1:', box_1)
     form.addRow('Channel 2:', box_2)
     form.addRow('Output .csv:', label_out)
+    form.addRow(label_exists)
     form.addRow(label_hint)
 
     layout = QtWidgets.QVBoxLayout(dlg)
@@ -162,9 +179,21 @@ def ask_inputs():
             box.setCurrentIndex(default)
             box.setEnabled(True)
             box.blockSignals(False)
-        label_out.setText(build_csv_path(path))
+        csv_path = build_csv_path(path)
+        label_out.setText(csv_path)
+        label_exists.setText(describe_existing_csv(csv_path))
         print(f"      {len(labels)} channel(s) found: {labels}")
+        if os.path.exists(csv_path):
+            print(f"WARNING: {os.path.basename(csv_path)} already exists and will be overwritten when this session ends")
         validate()
+
+    def try_accept():
+        csv_path = build_csv_path(state['path'])
+        if os.path.exists(csv_path):
+            answer = QtWidgets.QMessageBox.question(dlg, 'Output file already exists', f"{os.path.basename(csv_path)}\n\nalready exists and will be overwritten when this scoring session ends.\n\nContinue anyway?", QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No, QtWidgets.QMessageBox.StandardButton.No)
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        dlg.accept()
 
     button_browse.clicked.connect(browse)
     box_1.currentTextChanged.connect(lambda _: validate())
@@ -227,11 +256,11 @@ dur_sec = n_samples / fs
 t_axis = np.arange(n_samples, dtype=np.float32) / fs
 
 print("[3/5] Band-pass filtering skipped, the raw signals are displayed")
-# sigs_disp = butter_bandpass_filter(sigs_raw, LOWCUT, HIGHCUT, fs, order=FILT_ORDER)    # uncomment to display the filtered signals
-sigs_disp = sigs_raw
+sigs_disp = butter_bandpass_filter(sigs_raw, LOWCUT, HIGHCUT, fs, order=FILT_ORDER)    # uncomment to display the filtered signals
+#sigs_disp = sigs_raw
 
 print(f"[4/5] Computing spectrograms on the raw signals, {N_CORES} core(s)")
-plot_data = spectrogram_plot_calc(sigs_raw, fs)
+plot_data = spectrogram_plot_calc(sigs_disp , fs)
 spec_db = 10 * np.log10(np.maximum(plot_data['specs'], 1e-10))
 vmin, vmax = np.percentile(spec_db, SPEC_CLIP_PCT)
 print(f"      spectrogram shape {spec_db.shape} | colour limits {vmin:.1f} to {vmax:.1f} dB")
@@ -272,7 +301,7 @@ for i, ch_name in enumerate(ch_names):
     ax_sig.set_xlabel('Time (s)', fontsize=PLOT_FONT_PT)
     ax_sig.tick_params(axis='both', labelsize=PLOT_FONT_PT)
     ax_sig.grid(True, which='both', linewidth=0.4, alpha=0.5)
-    ax_sig.set_title(f'Raw (unfiltered) signal of channel {ch_name}', fontsize=PLOT_FONT_PT, fontweight='bold')
+    ax_sig.set_title(f'Raw (.3-30 hz filtered) signal of channel {ch_name}', fontsize=PLOT_FONT_PT, fontweight='bold')
     lines.append(ln)
 
 ax_time = fig.add_axes([0.16, 0.06, 0.66, 0.025])
@@ -466,7 +495,7 @@ def ask_labels(ch_name, start_sec, end_sec):
     dlg.setStyleSheet(f'font-size: {UI_FONT_PT}pt;')
     edit_1, edit_2 = QtWidgets.QLineEdit(), QtWidgets.QLineEdit()
     buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-    buttons.accepted.connect(dlg.accept)
+    buttons.accepted.connect(lambda: try_accept())
     buttons.rejected.connect(dlg.reject)
     form = QtWidgets.QFormLayout(dlg)
     form.setVerticalSpacing(12)
