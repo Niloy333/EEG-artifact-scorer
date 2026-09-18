@@ -31,14 +31,15 @@ SPEC_CLIP_PCT = (1.0, 99.0)    # percentiles used for the spectrogram colour lim
 
 FIG_SIZE, PLOT_FONT_PT = (15.0, 10.0), 11    # matplotlib window size (inch) and font size
 UI_FONT_PT = 11    # font size of the Qt windows
-INPUT_WIN_SIZE, TABLE_WIN_SIZE = (940, 900), (900, 520)    # (width, height) in pixels
+INPUT_WIN_SIZE, TABLE_WIN_SIZE = (940, 900), (1080, 520)    # (width, height) in pixels
 
-ART_LABELS = list(range(1, 5))    # valid artifact codes
 ART_RULES = {1: 'No data',
              2: 'High noise',
              3: 'Spiky',
-             4: 'M-shaped'}    # EDIT: shown in the input window
-ANN_COLUMNS = ['channel_name', 'start_sec', 'end_sec', 'artifact_1', 'artifact_2', 'duration']
+             4: 'M-shaped',
+             9: 'Artifact, but not defined above'}    # EDIT: shown in the input window
+ART_LABELS = list(ART_RULES.keys())    # valid artifact codes, taken from ART_RULES
+ANN_COLUMNS = ['channel_name', 'start_sec', 'end_sec', 'artifact_1', 'artifact_2', 'duration', 'notes']
 ANN_INT_COLUMNS = ['start_sec', 'end_sec', 'artifact_1', 'artifact_2', 'duration']
 MIN_DURATION_SEC = 1    # a selection shorter than this is rejected
 
@@ -65,7 +66,8 @@ def build_rules_text():
              f'&bull; Minimum duration is {MIN_DURATION_SEC} s; shorter or reversed selections are rejected.',
              '&bull; <b>Escape</b> discards a pending selection; a second left-click just moves the start point.',
              '&bull; <b>artifact_1</b> is mandatory, <b>artifact_2</b> is optional (left empty = no second label).',
-             '&bull; Rows can be edited (times, labels) or deleted in the annotation table.',
+             '&bull; <b>notes</b> is optional free text; it is stored as-is in the .csv.',
+             '&bull; Rows can be edited (times, labels, notes) or deleted in the annotation table.',
              '&bull; Press <b>Scoring finished</b> (lower right of the plot) to save the .csv and end the session.',
              '&nbsp;&nbsp;&nbsp;Closing the plot window does the same.',
              '',
@@ -373,7 +375,7 @@ update_window(0.0)
 
 SIG_AX = {1: 0, 3: 1}    # figure-axes index of a time-series pane -> channel index
 
-ann_df = pd.DataFrame({'channel_name': pd.Series(dtype='object'), 'start_sec': pd.Series(dtype='Int32'), 'end_sec': pd.Series(dtype='Int32'), 'artifact_1': pd.Series(dtype='Int32'), 'artifact_2': pd.Series(dtype='Int32'), 'duration': pd.Series(dtype='Int32')})
+ann_df = pd.DataFrame({'channel_name': pd.Series(dtype='object'), 'start_sec': pd.Series(dtype='Int32'), 'end_sec': pd.Series(dtype='Int32'), 'artifact_1': pd.Series(dtype='Int32'), 'artifact_2': pd.Series(dtype='Int32'), 'duration': pd.Series(dtype='Int32'), 'notes': pd.Series(dtype='object')})
 ann_spans = {}    # row id -> [patch on the time-series pane, patch on the spectrogram pane]
 ann_state = {'start_sec': None, 'ax_idx': None, 'next_id': 0, 'marker': None}    # pending selection, not yet in ann_df
 session = {'finished': False}    # guards against saving twice
@@ -413,9 +415,10 @@ tbl_win = QtWidgets.QWidget()
 tbl_win.setWindowTitle(f"Artifact annotations - {os.path.basename(edf_path)}")
 tbl_win.setStyleSheet(f'font-size: {UI_FONT_PT}pt;')
 tbl_win.resize(*TABLE_WIN_SIZE)
-tbl = QtWidgets.QTableWidget(0, 7)
+tbl = QtWidgets.QTableWidget(0, len(ANN_COLUMNS) + 1)
 tbl.setHorizontalHeaderLabels(ANN_COLUMNS + ['delete'])
-tbl.horizontalHeader().setStretchLastSection(True)
+tbl.horizontalHeader().setStretchLastSection(False)
+tbl.horizontalHeader().setSectionResizeMode(ANN_COLUMNS.index('notes'), QtWidgets.QHeaderView.ResizeMode.Stretch)
 tbl.verticalHeader().setDefaultSectionSize(int(UI_FONT_PT * 3.2))
 QtWidgets.QVBoxLayout(tbl_win).addWidget(tbl)
 tbl_win.show()
@@ -435,12 +438,14 @@ def on_row_delete(rid):
         refresh_table()
         fig.canvas.draw_idle()
 
-def on_time_edit(item):
-    col_idx = item.column()
-    if col_idx not in (1, 2):
-        return
-    rid, col = item.data(ROLE_ID), ANN_COLUMNS[col_idx]
+def on_item_edit(item):
+    rid, col = item.data(ROLE_ID), ANN_COLUMNS[item.column()]
     if rid not in ann_df.index:
+        return
+    if col == 'notes':    # free text, nothing to validate
+        ann_df.at[rid, 'notes'] = item.text().strip()
+        return
+    if col not in ('start_sec', 'end_sec'):
         return
     try:
         new_val = int(round(float(item.text())))
@@ -475,15 +480,15 @@ def refresh_table():
             else:
                 item = QtWidgets.QTableWidgetItem('' if pd.isna(row[col]) else str(row[col]))
                 item.setData(ROLE_ID, int(rid))
-                if col not in ('start_sec', 'end_sec'):
+                if col not in ('start_sec', 'end_sec', 'notes'):
                     item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
                 tbl.setItem(r, c, item)
         button = QtWidgets.QPushButton('Delete')
         button.clicked.connect(lambda _=False, rid=rid: on_row_delete(rid))
-        tbl.setCellWidget(r, 6, button)
+        tbl.setCellWidget(r, len(ANN_COLUMNS), button)
     tbl.blockSignals(False)
 
-tbl.itemChanged.connect(on_time_edit)
+tbl.itemChanged.connect(on_item_edit)
 refresh_table()
 
 #%% Helper: one modal window asking for both artifact labels
@@ -493,15 +498,21 @@ def ask_labels(ch_name, start_sec, end_sec):
     dlg = QtWidgets.QDialog(fig.canvas.manager.window)
     dlg.setWindowTitle('Artifact labels')
     dlg.setStyleSheet(f'font-size: {UI_FONT_PT}pt;')
-    edit_1, edit_2 = QtWidgets.QLineEdit(), QtWidgets.QLineEdit()
+    edit_1, edit_2, edit_notes = QtWidgets.QLineEdit(), QtWidgets.QLineEdit(), QtWidgets.QLineEdit()
+    edit_notes.setPlaceholderText('free text, optional')
+    edit_notes.setMinimumWidth(360)
     buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-    buttons.accepted.connect(lambda: try_accept())
+    buttons.accepted.connect(dlg.accept)
     buttons.rejected.connect(dlg.reject)
     form = QtWidgets.QFormLayout(dlg)
     form.setVerticalSpacing(12)
     form.addRow(QtWidgets.QLabel(header))
     form.addRow(f"artifact_1, one of {ART_LABELS}:", edit_1)
     form.addRow(f"artifact_2, one of {ART_LABELS} (optional):", edit_2)
+    form.addRow("notes (optional):", edit_notes)
+    label_rules = QtWidgets.QLabel('<br>'.join(f'<b>{code}</b> &mdash; {text}' for code, text in ART_RULES.items()))
+    label_rules.setTextFormat(QtCore.Qt.TextFormat.RichText)
+    form.addRow("Labels:", label_rules)
     form.addRow(buttons)
     while True:
         edit_1.setFocus()
@@ -510,7 +521,7 @@ def ask_labels(ch_name, start_sec, end_sec):
         status_1, art_1 = parse_label(edit_1.text())
         status_2, art_2 = parse_label(edit_2.text())
         if status_1 == 'ok' and status_2 in ('ok', 'empty'):
-            return art_1, art_2
+            return art_1, art_2, edit_notes.text().strip()
         print(f"WARNING: invalid label entry ('{edit_1.text()}', '{edit_2.text()}'); asking again")
         QtWidgets.QMessageBox.warning(dlg, 'Invalid label', f"artifact_1 must be one of {ART_LABELS}.\nartifact_2 must be one of {ART_LABELS} or left empty.")
 
@@ -557,13 +568,13 @@ def on_annotate_click(event):
                 print("WARNING: label entry cancelled; selection discarded")
                 clear_pending()
             else:
-                art_1, art_2 = labels
+                art_1, art_2, notes = labels
                 rid = ann_state['next_id']
                 ann_state['next_id'] += 1
-                ann_df.loc[rid, ANN_COLUMNS] = [ch_names[ch_idx], np.int32(start_sec), np.int32(t_click), np.int32(art_1), pd.NA if art_2 is None else np.int32(art_2), np.int32(t_click - start_sec)]
+                ann_df.loc[rid, ANN_COLUMNS] = [ch_names[ch_idx], np.int32(start_sec), np.int32(t_click), np.int32(art_1), pd.NA if art_2 is None else np.int32(art_2), np.int32(t_click - start_sec), notes]
                 clear_pending()
                 draw_span(rid)
-                print(f"row {rid}: {ch_names[ch_idx]} | {start_sec}-{t_click} s | duration {t_click - start_sec} s | labels {art_1}, {'-' if art_2 is None else art_2}")
+                print(f"row {rid}: {ch_names[ch_idx]} | {start_sec}-{t_click} s | duration {t_click - start_sec} s | labels {art_1}, {'-' if art_2 is None else art_2}" + (f" | notes: {notes}" if notes else ''))
     refresh_table()
     fig.canvas.draw_idle()
 
@@ -583,6 +594,7 @@ def finish_session(event=None):
     clear_pending()
     ann_df = ann_df.sort_values(['channel_name', 'start_sec']).reset_index(drop=True)
     ann_df[ANN_INT_COLUMNS] = ann_df[ANN_INT_COLUMNS].astype('Int32')
+    ann_df['notes'] = ann_df['notes'].fillna('').astype(str)
     print(f"\nScoring finished. Final annotation table ({len(ann_df)} row(s)):")
     print(ann_df.to_string() if len(ann_df) else "      (empty)")
     try:
