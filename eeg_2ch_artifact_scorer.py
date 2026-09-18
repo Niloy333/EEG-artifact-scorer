@@ -314,7 +314,7 @@ print(f"[4/5] Computing spectrograms on the raw signals, {N_CORES} core(s)")
 plot_data = spectrogram_plot_calc(sigs_disp , fs)
 spec_db = 10 * np.log10(np.maximum(plot_data['specs'], 1e-10))
 vmin, vmax = np.percentile(spec_db, SPEC_CLIP_PCT)
-print(f"      spectrogram shape {spec_db.shape} | colour limits {vmin:.1f} to {vmax:.1f} dB")
+print(f"      spectrogram shape {spec_db.shape} | color limits {vmin:.1f} to {vmax:.1f} dB")
 
 #%% Build the interactive panel
 
