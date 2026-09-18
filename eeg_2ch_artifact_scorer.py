@@ -18,7 +18,8 @@ from scipy.signal import butter, sosfiltfilt
 from lspopt import spectrogram_lspopt
 from joblib import Parallel, delayed
 
-START_DIR = r"/run/media/blue/M.2_2TB/wnzp_oa/Wearanize+_OA/Wearanize+OA_PlugNPlay_v1.1/"    # folder the file browser opens in
+# START_DIR = r"C:\Users\[YourUsername]\Downloads"
+START_DIR = r"/home/sikder@iwt.zz/Documents/Wearanize+_oa_artifact_detection"    # folder the file browser opens in
 # the annotation .csv is written next to the selected EDF file, no output folder to set
 
 LOWCUT, HIGHCUT, FILT_ORDER = 0.3, 30.0, 2    # band-pass settings, currently unused (display is unfiltered)
@@ -29,9 +30,12 @@ YLIM_INIT, YLIM_MIN, YLIM_MAX, YLIM_STEP = 150.0, 20.0, 1000.0, 5.0    # amplitu
 AMP_STEP_UV = 50.0    # amplitude change per Shift+wheel / horizontal-wheel notch / arrow key press
 SPEC_CLIP_PCT = (1.0, 99.0)    # percentiles used for the spectrogram colour limits
 
-FIG_SIZE, PLOT_FONT_PT = (15.0, 10.0), 11    # matplotlib window size (inch) and font size
+FIG_SIZE, PLOT_FONT_PT = (15.0, 11.0), 11    # matplotlib window size (inch) and font size
+CH_COLORS, ACC_COLOR = ('red', 'blue'), 'black'    # line colour of channel 1, channel 2, and the accelerometer
+ACC_DEFAULTS = ['Zmax_ACCX', 'Zmax_ACCY', 'Zmax_ACCZ']    # pre-selected accelerometer channels, changeable in the input window
+ACC_PLOT_MAX_POINTS = 20000    # the accelerometer overview is drawn as a min/max envelope above this many samples
 UI_FONT_PT = 11    # font size of the Qt windows
-INPUT_WIN_SIZE, TABLE_WIN_SIZE = (940, 900), (1080, 520)    # (width, height) in pixels
+INPUT_WIN_WIDTH, TABLE_WIN_SIZE = 940, (1080, 520)    # input window width (height fits the content); table window size
 
 ART_RULES = {1: 'No data',
              2: 'High noise',
@@ -44,6 +48,7 @@ ANN_INT_COLUMNS = ['start_sec', 'end_sec', 'artifact_1', 'artifact_2', 'duration
 MIN_DURATION_SEC = 1    # a selection shorter than this is rejected
 
 N_CORES = max(1, os.cpu_count() - 2)
+ACC_MARKER_TOP = 0.8 
 random_state = 33
 
 if 'qt' not in plt.get_backend().lower():
@@ -57,22 +62,22 @@ def build_rules_text():
              '&bull; <b>Left / right arrow</b>: move the time window by one full window.',
              '&bull; <b>Bottom slider</b>: jump anywhere in the recording.',
              f'&bull; <b>Shift + wheel up</b> increases the amplitude range by {AMP_STEP_UV:.0f} µV, Shift + wheel down decreases it.',
-             f'&bull; <b>Horizontal wheel</b> (thumb wheel) does the same: right = +{AMP_STEP_UV:.0f} µV, left = -{AMP_STEP_UV:.0f} µV.',
              f'&bull; <b>Up / down arrow</b> or the second slider: change the amplitude range by {AMP_STEP_UV:.0f} µV.',
              '',
              '<b>Scoring rules</b>',
+             '&bull; The <b>middle pane</b> shows the Euclidean norm of the accelerometer over the whole night (not clickable).',
              '&bull; <b>Left-click</b> on a time-series pane sets the <b>start</b> of an artifact (nearest full second).',
              '&bull; <b>Right-click</b> on the <b>same</b> pane sets the <b>end</b>; a label window then opens.',
              f'&bull; Minimum duration is {MIN_DURATION_SEC} s; shorter or reversed selections are rejected.',
              '&bull; <b>Escape</b> discards a pending selection; a second left-click just moves the start point.',
              '&bull; <b>artifact_1</b> is mandatory, <b>artifact_2</b> is optional (left empty = no second label).',
              '&bull; <b>notes</b> is optional free text; it is stored as-is in the .csv.',
+             '&bull; Tick <b>Same artifact on the other channel</b> to write an identical row for the other channel.',
              '&bull; Rows can be edited (times, labels, notes) or deleted in the annotation table.',
              '&bull; Press <b>Scoring finished</b> (lower right of the plot) to save the .csv and end the session.',
              '&nbsp;&nbsp;&nbsp;Closing the plot window does the same.',
-             '',
-             '<b>Artifact codes</b>']
-    lines += [f'&bull; <b>{code}</b> &mdash; {text}' for code, text in ART_RULES.items()]
+             '',]
+    #lines += [f'&bull; <b>{code}</b> &mdash; {text}' for code, text in ART_RULES.items()]
     return '<br>'.join(lines)
 
 #%% Helper: describe an already existing annotation file
@@ -93,7 +98,7 @@ def ask_inputs():
     dlg = QtWidgets.QDialog()
     dlg.setWindowTitle('EEG artifact scorer - input')
     dlg.setStyleSheet(f'font-size: {UI_FONT_PT}pt;')
-    dlg.resize(*INPUT_WIN_SIZE)
+    dlg.setMinimumWidth(INPUT_WIN_WIDTH)
     state = {'path': None, 'labels': []}
 
     edit_path = QtWidgets.QLineEdit()
@@ -105,8 +110,9 @@ def ask_inputs():
     row_file.addWidget(button_browse)
 
     box_1, box_2 = QtWidgets.QComboBox(), QtWidgets.QComboBox()
-    box_1.setEnabled(False)
-    box_2.setEnabled(False)
+    boxes_acc = [QtWidgets.QComboBox(), QtWidgets.QComboBox(), QtWidgets.QComboBox()]
+    for box in [box_1, box_2] + boxes_acc:
+        box.setEnabled(False)
     label_out = QtWidgets.QLabel('-')
     label_out.setWordWrap(True)
     label_hint = QtWidgets.QLabel('')
@@ -134,8 +140,10 @@ def ask_inputs():
     form = QtWidgets.QFormLayout()
     form.setVerticalSpacing(12)
     form.addRow('EDF file:', row_file)
-    form.addRow('Channel 1:', box_1)
-    form.addRow('Channel 2:', box_2)
+    form.addRow('EEG channel 1:', box_1)
+    form.addRow('EEG channel 2:', box_2)
+    for axis_name, box in zip(('x', 'y', 'z'), boxes_acc):
+        form.addRow(f'Accelerometer {axis_name}:', box)
     form.addRow('Output .csv:', label_out)
     form.addRow(label_exists)
     form.addRow(label_hint)
@@ -144,13 +152,26 @@ def ask_inputs():
     layout.setContentsMargins(18, 18, 18, 18)
     layout.setSpacing(14)
     layout.addLayout(form)
-    layout.addWidget(group_rules, stretch=1)
+    scroll_rules = QtWidgets.QScrollArea()
+    scroll_rules.setWidget(group_rules)
+    scroll_rules.setWidgetResizable(True)
+    scroll_rules.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    layout.addWidget(scroll_rules, stretch=1)
     layout.addWidget(buttons)
 
     def validate():
-        ok = state['path'] is not None and box_1.currentText() != '' and box_1.currentText() != box_2.currentText()
-        label_hint.setText('The two channels must be different.' if state['path'] is not None and box_1.currentText() == box_2.currentText() else '')
-        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(ok)
+        eeg_picked = [box_1.currentText(), box_2.currentText()]
+        acc_picked = [box.currentText() for box in boxes_acc]
+        problem = ''
+        if state['path'] is not None:
+            if len(set(eeg_picked)) < 2:
+                problem = 'The two EEG channels must be different.'
+            elif len(set(acc_picked)) < 3:
+                problem = 'The three accelerometer channels must be different.'
+            elif set(eeg_picked) & set(acc_picked):
+                problem = 'A channel cannot be used as both EEG and accelerometer.'
+        label_hint.setText(problem)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(state['path'] is not None and problem == '')
 
     def browse():
         path, _ = QtWidgets.QFileDialog.getOpenFileName(dlg, 'Select an EDF file', START_DIR, 'EDF files (*.edf *.EDF);;All files (*)')
@@ -174,7 +195,8 @@ def ask_inputs():
             return
         state['path'], state['labels'] = path, labels
         edit_path.setText(path)
-        for box, default in ((box_1, 0), (box_2, 1)):
+        defaults = [0, 1] + [labels.index(name) if name in labels else min(2 + i, len(labels) - 1) for i, name in enumerate(ACC_DEFAULTS)]
+        for box, default in zip([box_1, box_2] + boxes_acc, defaults):
             box.blockSignals(True)
             box.clear()
             box.addItems(labels)
@@ -198,11 +220,15 @@ def ask_inputs():
         dlg.accept()
 
     button_browse.clicked.connect(browse)
-    box_1.currentTextChanged.connect(lambda _: validate())
-    box_2.currentTextChanged.connect(lambda _: validate())
+    for box in [box_1, box_2] + boxes_acc:
+        box.currentTextChanged.connect(lambda _: validate())
+    dlg.adjustSize()
+    available = QtWidgets.QApplication.primaryScreen().availableGeometry()
+    dlg.resize(min(dlg.width(), available.width() - 60), min(dlg.sizeHint().height(), available.height() - 60))
+    dlg.move(available.center() - dlg.rect().center())
     if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
         return None
-    return state['path'], [box_1.currentText(), box_2.currentText()]
+    return state['path'], [box_1.currentText(), box_2.currentText()], [box.currentText() for box in boxes_acc]
 
 #%% Helper: output path of the annotation file (next to the EDF file)
 
@@ -230,6 +256,25 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=2):
     sos = butter(order, [lowcut / (0.5 * fs), highcut / (0.5 * fs)], btype='band', output='sos')
     return sosfiltfilt(sos, data, axis=-1).astype(np.float32)
 
+#%% Helper: Euclidean norm of the accelerometer channels
+
+def euclidean_norm(acc_channels):
+    eu_norm = np.sqrt(np.sum(acc_channels ** 2, axis=0))
+    return eu_norm
+
+#%% Helper: min/max envelope, so the whole-night accelerometer trace stays fast to redraw
+
+def decimate_envelope(t, y, max_points=ACC_PLOT_MAX_POINTS):
+    if y.size <= max_points:
+        return t, y
+    block = int(np.ceil(y.size / (max_points / 2)))
+    n_blocks = y.size // block
+    y_blocks = y[:n_blocks * block].reshape(n_blocks, block)
+    t_out = np.repeat(t[:n_blocks * block:block], 2)
+    y_out = np.empty(n_blocks * 2, dtype=np.float32)
+    y_out[0::2], y_out[1::2] = y_blocks.min(axis=1), y_blocks.max(axis=1)
+    return t_out, y_out
+
 #%% Helper: multitaper (lspopt) spectrogram of all channels
 
 def spectrogram_plot_calc(signals, samp_rate, win_sec=SPEC_WIN_SEC, fmin=SPEC_FMIN, fmax=SPEC_FMAX, n_cores=N_CORES):
@@ -249,10 +294,14 @@ print("[1/5] Waiting for the input window")
 inputs = ask_inputs()
 if inputs is None:
     raise SystemExit("Input window cancelled, nothing to do.")
-edf_path, ch_names = inputs
+edf_path, ch_names, acc_names = inputs
 ANN_CSV = build_csv_path(edf_path)
 
 sigs_raw, fs = read_edf_channels(edf_path, ch_names)
+acc_raw, fs_acc = read_edf_channels(edf_path, acc_names)    # the accelerometer may run at another sampling rate
+acc_norm = euclidean_norm(acc_raw)
+t_acc = np.arange(acc_norm.size, dtype=np.float32) / fs_acc
+print(f"      accelerometer norm: {acc_norm.size} samples at {fs_acc:g} Hz, range {acc_norm.min():.3g} to {acc_norm.max():.3g}")
 n_samples = sigs_raw.shape[1]
 dur_sec = n_samples / fs
 t_axis = np.arange(n_samples, dtype=np.float32) / fs
@@ -272,7 +321,9 @@ print(f"      spectrogram shape {spec_db.shape} | colour limits {vmin:.1f} to {v
 print("[5/5] Building the interactive panel")
 plt.rcParams['keymap.pan'] = []    # free the 'p' key, keep arrow keys for navigation
 
-fig, axs = plt.subplots(4, 1, figsize=FIG_SIZE, gridspec_kw={'height_ratios': [1, 1.3, 1, 1.3], 'hspace': 0.45})
+SPEC_AX, TS_AX, ACC_AX = {0: 0, 1: 3}, {0: 1, 1: 4}, 2    # channel index -> figure-axes index
+
+fig, axs = plt.subplots(5, 1, figsize=FIG_SIZE, gridspec_kw={'height_ratios': [1, 1.3, 0.8, 1, 1.3], 'hspace': 0.55})
 fig.subplots_adjust(left=0.07, right=0.98, top=0.95, bottom=0.14)
 fig.canvas.manager.set_window_title(f"Artifact scorer - {os.path.basename(edf_path)}")
 
@@ -282,29 +333,43 @@ spec_f = plot_data['freqs']
 extent = [float(spec_t[0]) - SPEC_WIN_SEC / 2, float(spec_t[-1]) + SPEC_WIN_SEC / 2, float(spec_f[0]), float(spec_f[-1])]
 
 for i, ch_name in enumerate(ch_names):
-    ax_spec, ax_sig = axs[2 * i], axs[2 * i + 1]
+    ax_spec, ax_sig = axs[SPEC_AX[i]], axs[TS_AX[i]]
 
     ax_spec.imshow(spec_db[i], aspect='auto', origin='lower', extent=extent, cmap='seismic', vmin=vmin, vmax=vmax, interpolation='bilinear')
     ax_spec.set_xlim(0, dur_sec)
     ax_spec.set_ylabel('Frequency (Hz)', fontsize=PLOT_FONT_PT)
-    ax_spec.set_xlabel('Time (s)', fontsize=PLOT_FONT_PT)
+    #ax_spec.set_xlabel('Time (s)', fontsize=PLOT_FONT_PT)
     ax_spec.tick_params(axis='both', labelsize=PLOT_FONT_PT)
     if i == 0:
-        ax_spec.set_title(f'Spectrogram of channel {ch_name} [colorbar: (high-power) red>>white>>blue (low-power)]', fontsize=PLOT_FONT_PT, fontweight='bold')
+        ax_spec.set_title(f'Spectrogram of channel {ch_name} [colorbar: (high-power) red>>white>>blue (low-power)]', fontsize=PLOT_FONT_PT)
     else:
-        ax_spec.set_title(f'Spectrogram of channel {ch_name}', fontsize=PLOT_FONT_PT, fontweight='bold')
+        ax_spec.set_title(f'Spectrogram of channel {ch_name}', fontsize=PLOT_FONT_PT)
     patch = plt.Rectangle((0, 0), WINDOW_SEC, 1, transform=blended_transform_factory(ax_spec.transData, ax_spec.transAxes), facecolor='none', edgecolor='lime', linewidth=1.5, zorder=5)
     ax_spec.add_patch(patch)
     win_patches.append(patch)
 
-    ln, = ax_sig.plot([], [], linewidth=0.6, color='k')
+    ln, = ax_sig.plot([], [], linewidth=0.6, color=CH_COLORS[i])
     ax_sig.set_ylim(-YLIM_INIT, YLIM_INIT)
     ax_sig.set_ylabel('Amplitude (µV)', fontsize=PLOT_FONT_PT)
-    ax_sig.set_xlabel('Time (s)', fontsize=PLOT_FONT_PT)
+    if i != 0:
+        ax_sig.set_xlabel('Time (s)', fontsize=PLOT_FONT_PT)
     ax_sig.tick_params(axis='both', labelsize=PLOT_FONT_PT)
     ax_sig.grid(True, which='both', linewidth=0.4, alpha=0.5)
-    ax_sig.set_title(f'Raw (.3-30 hz filtered) signal of channel {ch_name}', fontsize=PLOT_FONT_PT, fontweight='bold')
+    ax_sig.set_title(f'Raw (.3-30 hz filtered) signal of channel {ch_name}', fontsize=PLOT_FONT_PT)
     lines.append(ln)
+
+ax_acc = axs[ACC_AX]
+ax_acc.plot(*decimate_envelope(t_acc, acc_norm), linewidth=0.5, color=ACC_COLOR)
+ax_acc.set_xlim(0, dur_sec)
+ax_acc.grid(True, which='both', linewidth=0.4, alpha=0.5)
+ax_acc.set_ylabel('Acc. norm', fontsize=PLOT_FONT_PT)
+#ax_acc.set_xlabel('Time (s)', fontsize=PLOT_FONT_PT)
+ax_acc.tick_params(axis='both', labelsize=PLOT_FONT_PT)
+ax_acc.set_title(f"Euclidean norm of the accelerometer ({', '.join(acc_names)}) at {fs_acc:g} Hz", fontsize=PLOT_FONT_PT)
+ax_acc.set_ylim(ax_acc.get_ylim())    # freeze the autoscaled range before adding the patch
+patch_acc = plt.Rectangle((0, ax_acc.get_ylim()[0]), WINDOW_SEC, ACC_MARKER_TOP - ax_acc.get_ylim()[0], facecolor='none', edgecolor='lime', linewidth=1.5, zorder=5)
+ax_acc.add_patch(patch_acc)
+win_patches.append(patch_acc)
 
 ax_time = fig.add_axes([0.16, 0.06, 0.66, 0.025])
 ax_amp = fig.add_axes([0.16, 0.02, 0.66, 0.025])
@@ -326,14 +391,15 @@ def update_window(t0):
     ticks = np.arange(t0, t1 + 0.5 * XTICK_STEP_SEC, XTICK_STEP_SEC)
     for i in range(2):
         lines[i].set_data(t_axis[i0:i1], sigs_disp[i, i0:i1])
-        axs[2 * i + 1].set_xlim(t0, t1)
-        axs[2 * i + 1].set_xticks(ticks)
-        win_patches[i].set_x(t0)
+        axs[TS_AX[i]].set_xlim(t0, t1)
+        axs[TS_AX[i]].set_xticks(ticks)
+    for patch in win_patches:    # the window marker on the two spectrograms and the accelerometer pane
+        patch.set_x(t0)
     fig.canvas.draw_idle()
 
 def on_amp(val):
     for i in range(2):
-        axs[2 * i + 1].set_ylim(-val, val)
+        axs[TS_AX[i]].set_ylim(-val, val)
     fig.canvas.draw_idle()
 
 def step_time(n_windows):
@@ -373,7 +439,7 @@ update_window(0.0)
 
 #%% Annotation state, dataframe, and drawing helpers
 
-SIG_AX = {1: 0, 3: 1}    # figure-axes index of a time-series pane -> channel index
+SIG_AX = {TS_AX[0]: 0, TS_AX[1]: 1}    # figure-axes index of a time-series pane -> channel index
 
 ann_df = pd.DataFrame({'channel_name': pd.Series(dtype='object'), 'start_sec': pd.Series(dtype='Int32'), 'end_sec': pd.Series(dtype='Int32'), 'artifact_1': pd.Series(dtype='Int32'), 'artifact_2': pd.Series(dtype='Int32'), 'duration': pd.Series(dtype='Int32'), 'notes': pd.Series(dtype='object')})
 ann_spans = {}    # row id -> [patch on the time-series pane, patch on the spectrogram pane]
@@ -384,8 +450,8 @@ def draw_span(rid):
     remove_span(rid)
     ch_idx = int(ann_df.at[rid, 'channel_name'] == ch_names[1])
     t0, t1 = int(ann_df.at[rid, 'start_sec']), int(ann_df.at[rid, 'end_sec'])
-    p_sig = axs[2 * ch_idx + 1].axvspan(t0, t1, facecolor='red', alpha=0.20, zorder=0)
-    p_spec = axs[2 * ch_idx].axvspan(t0, t1, facecolor='none', edgecolor='red', linewidth=1.2, zorder=4)
+    p_sig = axs[TS_AX[ch_idx]].axvspan(t0, t1, facecolor='red', alpha=0.20, zorder=0)
+    p_spec = axs[SPEC_AX[ch_idx]].axvspan(t0, t1, facecolor='none', edgecolor='red', linewidth=1.2, zorder=4)
     ann_spans[rid] = [p_sig, p_spec]
 
 def remove_span(rid):
@@ -493,7 +559,8 @@ refresh_table()
 
 #%% Helper: one modal window asking for both artifact labels
 
-def ask_labels(ch_name, start_sec, end_sec):
+def ask_labels(ch_idx, start_sec, end_sec):
+    ch_name, other_name = ch_names[ch_idx], ch_names[1 - ch_idx]
     header = f"{ch_name}   |   {start_sec}-{end_sec} s   |   duration {end_sec - start_sec} s"
     dlg = QtWidgets.QDialog(fig.canvas.manager.window)
     dlg.setWindowTitle('Artifact labels')
@@ -510,6 +577,8 @@ def ask_labels(ch_name, start_sec, end_sec):
     form.addRow(f"artifact_1, one of {ART_LABELS}:", edit_1)
     form.addRow(f"artifact_2, one of {ART_LABELS} (optional):", edit_2)
     form.addRow("notes (optional):", edit_notes)
+    check_same = QtWidgets.QCheckBox(f"Same artifact on the channel {'below' if ch_idx == 0 else 'above'} ({other_name})")
+    form.addRow('', check_same)
     label_rules = QtWidgets.QLabel('<br>'.join(f'<b>{code}</b> &mdash; {text}' for code, text in ART_RULES.items()))
     label_rules.setTextFormat(QtCore.Qt.TextFormat.RichText)
     form.addRow("Labels:", label_rules)
@@ -521,7 +590,7 @@ def ask_labels(ch_name, start_sec, end_sec):
         status_1, art_1 = parse_label(edit_1.text())
         status_2, art_2 = parse_label(edit_2.text())
         if status_1 == 'ok' and status_2 in ('ok', 'empty'):
-            return art_1, art_2, edit_notes.text().strip()
+            return art_1, art_2, edit_notes.text().strip(), check_same.isChecked()
         print(f"WARNING: invalid label entry ('{edit_1.text()}', '{edit_2.text()}'); asking again")
         QtWidgets.QMessageBox.warning(dlg, 'Invalid label', f"artifact_1 must be one of {ART_LABELS}.\nartifact_2 must be one of {ART_LABELS} or left empty.")
 
@@ -563,18 +632,19 @@ def on_annotate_click(event):
             print(f"Selected duration is less than {MIN_DURATION_SEC} sec")
             clear_pending()
         else:
-            labels = ask_labels(ch_names[ch_idx], start_sec, t_click)
+            labels = ask_labels(ch_idx, start_sec, t_click)
             if labels is None:
                 print("WARNING: label entry cancelled; selection discarded")
                 clear_pending()
             else:
-                art_1, art_2, notes = labels
-                rid = ann_state['next_id']
-                ann_state['next_id'] += 1
-                ann_df.loc[rid, ANN_COLUMNS] = [ch_names[ch_idx], np.int32(start_sec), np.int32(t_click), np.int32(art_1), pd.NA if art_2 is None else np.int32(art_2), np.int32(t_click - start_sec), notes]
+                art_1, art_2, notes, also_other = labels
                 clear_pending()
-                draw_span(rid)
-                print(f"row {rid}: {ch_names[ch_idx]} | {start_sec}-{t_click} s | duration {t_click - start_sec} s | labels {art_1}, {'-' if art_2 is None else art_2}" + (f" | notes: {notes}" if notes else ''))
+                for idx in ([ch_idx, 1 - ch_idx] if also_other else [ch_idx]):
+                    rid = ann_state['next_id']
+                    ann_state['next_id'] += 1
+                    ann_df.loc[rid, ANN_COLUMNS] = [ch_names[idx], np.int32(start_sec), np.int32(t_click), np.int32(art_1), pd.NA if art_2 is None else np.int32(art_2), np.int32(t_click - start_sec), notes]
+                    draw_span(rid)
+                    print(f"row {rid}: {ch_names[idx]} | {start_sec}-{t_click} s | duration {t_click - start_sec} s | labels {art_1}, {'-' if art_2 is None else art_2}" + (f" | notes: {notes}" if notes else ''))
     refresh_table()
     fig.canvas.draw_idle()
 
