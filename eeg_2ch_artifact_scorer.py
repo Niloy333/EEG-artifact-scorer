@@ -28,10 +28,10 @@ WINDOW_SEC, XTICK_STEP_SEC = 30.0, 5.0    # time-series window width and x-tick 
 SCROLL_STEP_SEC = WINDOW_SEC    # time shift per vertical mouse-wheel notch (wheel down = forward)
 YLIM_INIT, YLIM_MIN, YLIM_MAX, YLIM_STEP = 150.0, 20.0, 1000.0, 5.0    # amplitude half-range: start, limits, slider step
 AMP_STEP_UV = 50.0    # amplitude change per Shift+wheel / horizontal-wheel notch / arrow key press
-SPEC_CLIP_PCT = (1.0, 99.0)    # percentiles used for the spectrogram colour limits
+SPEC_CLIP_PCT = (1.0, 99.0)    # percentiles used for the spectrogram color limits
 
 FIG_SIZE, PLOT_FONT_PT = (15.0, 11.0), 11    # matplotlib window size (inch) and font size
-CH_COLORS, ACC_COLOR = ('red', 'blue'), 'black'    # line color of channel 1, channel 2, and the accelerometer
+CH_COLORS, ACC_COLOR = ('red', 'blue'), 'black'    # line colour of channel 1, channel 2, and the accelerometer
 ACC_DEFAULTS = ['Zmax_ACCX', 'Zmax_ACCY', 'Zmax_ACCZ']    # pre-selected accelerometer channels, changeable in the input window
 ACC_PLOT_MAX_POINTS = 20000    # the accelerometer overview is drawn as a min/max envelope above this many samples
 UI_FONT_PT = 11    # font size of the Qt windows
