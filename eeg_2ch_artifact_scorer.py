@@ -18,8 +18,7 @@ from scipy.signal import butter, sosfiltfilt
 from lspopt import spectrogram_lspopt
 from joblib import Parallel, delayed
 
-# START_DIR = r"C:\Users\[YourUsername]\Downloads"
-START_DIR = r"/home/sikder@iwt.zz/Documents/Wearanize+_oa_artifact_detection"    # folder the file browser opens in
+START_DIR = r""    # folder the file browser opens in
 # the annotation .csv is written next to the selected EDF file, no output folder to set
 
 LOWCUT, HIGHCUT, FILT_ORDER = 0.3, 30.0, 2    # band-pass settings, currently unused (display is unfiltered)
