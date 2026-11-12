@@ -158,7 +158,7 @@ The time series is displayed unfiltered by default. A zero-phase Butterworth ban
 - The accelerometer overview is drawn as a min/max envelope rather than every sample, so the panel stays responsive on long recordings.
 - The `.csv` is written only when the session ends properly. If the interpreter is interrupted or restarted while the panel is open, nothing is saved — but the table is still in the `ann_df` variable.
 - Re-scoring a recording overwrites the previous `.csv`. The input window warns about this before you start.
-- Feel free to adapt it for the specific needs of your problem.
+- Feel free to adapt the script for the specific needs of your problem.
 - LLMs were used to modify and customize it. Feel free to use and modify at your own risk.
 
 ---
