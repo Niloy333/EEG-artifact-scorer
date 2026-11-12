@@ -67,7 +67,7 @@ source artifactscorer/bin/activate        # Windows: artifactscorer\Scripts\acti
 pip install numpy pandas scipy matplotlib PyQt5 pyedflib lspopt joblib
 ```
 
-However, it is best to run it within a dedicated Miniconda environment; [follow these instructions](https://github.com/Niloy333/EEG-artifact-scorer/blob/base/conda_install_instructions.txt).
+However, it is best to run it within a dedicated Miniconda environment; [follow these instructions](https://github.com/Niloy333/EEG-artifact-scorer/blob/base/run_in_conda_instructions.md).
 
 ---
 
