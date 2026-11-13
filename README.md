@@ -55,6 +55,8 @@ Python 3.9 or newer, and:
 | `lspopt` | multitaper spectrograms |
 | `joblib` | computing both spectrograms in parallel |
 
+To install all the required packages:
+
 ```bash
 pip install numpy pandas scipy matplotlib PyQt5 pyedflib lspopt joblib
 ```
@@ -67,7 +69,7 @@ source artifactscorer/bin/activate        # Windows: artifactscorer\Scripts\acti
 pip install numpy pandas scipy matplotlib PyQt5 pyedflib lspopt joblib
 ```
 
-However, it is best to run it within a dedicated Miniconda environment; [follow these instructions](https://github.com/Niloy333/EEG-artifact-scorer/blob/base/run_in_conda_instructions.md).
+However, it is best to run it within a dedicated Miniconda environment; for that, [follow these instructions](https://github.com/Niloy333/EEG-artifact-scorer/blob/base/run_in_conda_instructions.md).
 
 ---
 
